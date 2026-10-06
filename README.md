@@ -14,7 +14,8 @@
 | Camada | Stack |
 |---|---|
 | Frontend | React 19, Vite 8, Tailwind CSS 4, ESLint (JavaScript/JSX) |
-| Backend | Java 21+, Spring Boot 4.1 (Spring Web MVC), Maven (via Maven Wrapper) |
+| Backend | Java 21+, Spring Boot 4.1 (Spring Web MVC, Spring Data JPA), Maven (via Maven Wrapper) |
+| Banco | PostgreSQL 16 no [Neon](https://neon.tech), migrations com Flyway |
 | Deploy | GitHub Actions + GitHub Pages |
 
 ## Arquitetura
@@ -38,16 +39,19 @@ MarketFaesaWeb/
 │   └── package.json
 ├── backend/                         # backend em Java (Spring Boot + Maven)
 │   ├── pom.xml                      # dependências e build
+│   ├── application-local.properties.example  # modelo da config local do banco (copie sem o .example)
 │   ├── mvnw, mvnw.cmd, .mvn/        # Maven Wrapper (não precisa instalar o Maven)
 │   └── src/
 │       ├── main/java/br/com/marketfaesa/
 │       │   ├── MarketFaesaApplication.java  # ponto de entrada (@SpringBootApplication)
-│       │   ├── model/Usuario.java   # record: id, usuario, nome, email
+│       │   ├── model/               # entidades JPA: Usuario (login por e-mail), ConfiguracaoUsuario, Tema
 │       │   ├── controller/
 │       │   ├── service/
-│       │   └── repository/
+│       │   └── repository/          # UsuarioRepository, ConfiguracaoUsuarioRepository (Spring Data JPA)
 │       ├── main/resources/application.properties  # configurações (porta, banco etc.)
+│       ├── main/resources/db/migration/           # migrations do Flyway (V1__..., V2__...)
 │       └── test/java/br/com/marketfaesa/          # testes (JUnit + Spring Boot Test)
+│           └── PostgresDeTeste.java               # banco PostgreSQL usado pelos testes
 ├── CONTRIBUTING.md                  # padrão de branches, commits e PRs
 ├── README.md
 └── PROXIMOS_PASSOS.md
@@ -71,8 +75,8 @@ MarketFaesaWeb/
 
 ### Camadas do backend
 
-- `model`: entidades e objetos de dados (hoje só `Usuario`).
-- `repository`: acesso e persistência dos dados.
+- `model`: entidades JPA mapeadas para as tabelas das migrations (hoje `Usuario` e `ConfiguracaoUsuario`, com o enum `Tema`).
+- `repository`: acesso e persistência dos dados (interfaces `JpaRepository`).
 - `service`: regras de negócio e validações.
 - `controller`: entrada das requisições; chama os services, sem regra de negócio.
 
@@ -98,14 +102,60 @@ Outros scripts:
 
 Pré-requisito: JDK 21 ou superior (`java -version`). Não é preciso instalar o Maven: o Maven Wrapper (`mvnw`) baixa a versão certa na primeira execução.
 
-Dentro de `backend/`:
+O backend usa PostgreSQL hospedado no [Neon](https://neon.tech) (plano gratuito). Não há banco em memória nem Docker: tanto o desenvolvimento quanto a produção falam com um Postgres de verdade.
 
-```bash
-./mvnw spring-boot:run   # sobe o servidor em http://localhost:8080
-./mvnw test              # roda os testes
+### Banco de dados (Neon)
+
+O schema é criado só pelas migrations do Flyway em `backend/src/main/resources/db/migration/`, aplicadas automaticamente ao subir a aplicação. O Hibernate roda com `ddl-auto=validate`: ele só confere se as entidades batem com as tabelas e nunca altera o banco. Para mudar o schema, crie uma nova migration (`V<n>__descricao.sql`); nunca edite uma que já foi aplicada.
+
+A conexão vem de variáveis de ambiente, lidas em `application.properties`:
+
+| Variável | Uso |
+|---|---|
+| `DATABASE_URL` | URL JDBC do Neon **com pooler** (host com `-pooler`), usada pela aplicação |
+| `DATABASE_USERNAME` | usuário do banco |
+| `DATABASE_PASSWORD` | senha do banco |
+| `DATABASE_DIRECT_URL` | opcional: URL JDBC **direta** (host sem `-pooler`), usada pelo Flyway nas migrations; se faltar, usa `DATABASE_URL` |
+
+O Neon mostra a conexão como URI (`postgresql://usuario:senha@host/neondb?sslmode=require`). O JDBC não aceita esse formato: troque o prefixo por `jdbc:postgresql://`, tire `usuario:senha@` da URL e passe usuário e senha nas variáveis separadas. Exemplo:
+
+```
+DATABASE_URL=jdbc:postgresql://ep-xxxx-pooler.sa-east-1.aws.neon.tech/neondb?sslmode=require
 ```
 
-No PowerShell ou no CMD, use `.\mvnw.cmd` no lugar de `./mvnw`. O build vai para `backend/target/` (ignorada pelo `backend/.gitignore`).
+### Rodando localmente
+
+Em vez de exportar as variáveis, você pode usar o perfil `local`: copie `backend/application-local.properties.example` para `backend/application-local.properties` (já ignorado pelo Git, nunca faça commit dele), preencha com os dados do seu banco no Neon e rode, dentro de `backend/`:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local   # sobe o servidor em http://localhost:8080
+```
+
+Com as variáveis de ambiente definidas, basta `./mvnw spring-boot:run`.
+
+No PowerShell ou no CMD, use `.\mvnw.cmd` no lugar de `./mvnw` (e `"-Dspring-boot.run.profiles=local"` entre aspas no PowerShell). O build vai para `backend/target/` (ignorada pelo `backend/.gitignore`).
+
+### Testes
+
+```bash
+./mvnw test
+```
+
+Os testes não usam o Neon. A classe `src/test/java/br/com/marketfaesa/PostgresDeTeste.java` fornece o banco:
+
+- se a variável `TEST_DATABASE_URL` existir (com `TEST_DATABASE_USERNAME` e `TEST_DATABASE_PASSWORD` opcionais), usa esse banco;
+- senão, sobe um PostgreSQL 16 embutido ([zonky embedded-postgres](https://github.com/zonkyio/embedded-postgres)), baixado como dependência do Maven, sem instalar nada.
+
+O Flyway aplica as migrations nesse banco antes dos testes. Se o Postgres embutido não subir no seu ambiente (ex.: sem permissão para extrair e executar os binários em `/tmp`), ou se preferir usar um Postgres já instalado, aponte `TEST_DATABASE_URL` para ele:
+
+```bash
+TEST_DATABASE_URL=jdbc:postgresql://localhost:5432/mf_test TEST_DATABASE_USERNAME=mf TEST_DATABASE_PASSWORD=mf ./mvnw test
+```
+
+Como escrever testes que usam o banco:
+
+- **`@SpringBootTest`**: não precisa fazer nada. `PostgresDeTeste` é um `@Configuration` no pacote `br.com.marketfaesa`, então o component scan o encontra e o `DataSource` dele (marcado com `@Primary` e `@FlywayDataSource`) substitui o do `application.properties`.
+- **Testes de fatia** (ex.: `@DataJpaTest`, que não fazem component scan): adicione `@Import(PostgresDeTeste.class)` e `@AutoConfigureTestDatabase(replace = Replace.NONE)`.
 
 Ainda não há endpoints: acessar `http://localhost:8080` responde `404` até o primeiro controller ser criado (ver [PROXIMOS_PASSOS.md](PROXIMOS_PASSOS.md)).
 
