@@ -1,6 +1,6 @@
 # Próximos passos
 
-Roadmap para evoluir o backend e ligá-lo ao frontend. O backend já roda com Spring Boot 4.1 (Java 21+, Maven Wrapper), já conecta ao PostgreSQL (Neon) com migrations do Flyway e já tem os endpoints de health, cadastro, login (JWT), perfil e configurações (lista no [README](README.md#api)), e o front já os usa para login, cadastro, sessão, leitura do perfil e configurações. Falta hospedar o backend e definir o `VITE_API_URL` de produção.
+Roadmap para evoluir o backend e ligá-lo ao frontend. O backend já roda com Spring Boot 4.1 (Java 21+, Maven Wrapper), já conecta ao PostgreSQL (Neon) com migrations do Flyway e já tem os endpoints de health, cadastro, login (JWT), perfil e configurações (lista no [README](README.md#api)), e o front já os usa para login, cadastro, sessão, leitura do perfil e configurações. O deploy no Render (API em Docker + front estático, banco no Neon) já está descrito no `render.yaml`; falta criar os serviços no painel do Render.
 
 ---
 
@@ -147,12 +147,15 @@ Fica em `MarketPlace/src/api/`:
 
 ## 4. Deploy
 
-O GitHub Pages serve apenas arquivos estáticos: o frontend continua lá, mas o backend precisa de outra hospedagem (ex.: Render, Railway, Fly.io ou uma VM). Pontos de atenção:
+O GitHub Pages serve apenas arquivos estáticos: ele continua publicando o frontend pelo `deploy.yml`. Para ter front e API no ar juntos, o repositório tem o Blueprint `render.yaml` (passo a passo no [README](README.md#deploy-render)):
 
-- Banco PostgreSQL gerenciado: o Neon já é usado; na hospedagem, basta definir as variáveis `DATABASE_*` (o pool da aplicação está limitado a 5 conexões, pensando no plano gratuito).
-- Segredos em variáveis de ambiente, nunca no repositório: `DATABASE_*` e `JWT_SECRET` (gere um próprio para produção com `openssl rand -base64 48`; trocar o valor invalida todos os tokens emitidos). Se o front tiver outra origem, defina `CORS_ALLOWED_ORIGINS`.
-- Front e back em domínios diferentes: configurar CORS e usar HTTPS nos dois.
-- Planos gratuitos costumam "dormir"; a primeira requisição pode demorar, então o front deve mostrar carregamento.
+- **API**: Web Service com runtime Docker no plano gratuito (`backend/Dockerfile`, multi-stage com JRE 21 e usuário sem privilégios), região Virginia, health check em `/api/health`. A porta vem de `PORT`, definida pelo Render.
+- **Front**: Static Site com `npm run build -- --base=/`, `VITE_API_URL` na própria origem e rewrites `/api/*` para a API e `/*` para `/index.html`.
+- **Banco**: Neon. `DATABASE_URL` com o host `-pooler` e `DATABASE_DIRECT_URL` sem `-pooler` (Flyway), as duas em JDBC e sem `&channel_binding=require`; são pedidas na criação do Blueprint (`sync: false`), junto com usuário e senha. O pool da aplicação está limitado a 5 conexões.
+- **Segredos**: `JWT_SECRET` é gerado pelo Render (`generateValue`); trocar o valor invalida todos os tokens emitidos. Nada de segredo no repositório.
+- **Memória**: o plano gratuito tem 512 MB; o `JAVA_TOOL_OPTIONS` do Blueprint limita o heap a 256 MB (medido localmente com `-m 512m`: cerca de 210 MB parado e 265 MB sob carga leve).
+- **Cold start**: a API gratuita dorme após uns 15 minutos sem uso e a primeira requisição pode levar perto de um minuto.
+- **Nomes**: se o Render der outro subdomínio (nome ocupado), ajuste no `render.yaml` as URLs de `CORS_ALLOWED_ORIGINS`, `VITE_API_URL` e do rewrite `/api/*`.
 
 ---
 
@@ -196,8 +199,9 @@ O GitHub Pages serve apenas arquivos estáticos: o frontend continua lá, mas o 
 
 ### Fase 5 — Produção
 - [x] Usar PostgreSQL (Neon)
-- [ ] Hospedar o backend e configurar variáveis de ambiente (`DATABASE_*`, `JWT_SECRET`, `CORS_ALLOWED_ORIGINS`)
-- [ ] Definir `VITE_API_URL` de produção no workflow de deploy
+- [x] Preparar o deploy no Render: `backend/Dockerfile` e Blueprint `render.yaml` (API, front e variáveis)
+- [ ] Criar o Blueprint no Render e preencher as variáveis `DATABASE_*` do Neon
+- [ ] Definir `VITE_API_URL` de produção no workflow do GitHub Pages (no Render, já vem do `render.yaml`)
 - [x] Liberar CORS para a origem do GitHub Pages
 
 ### Opcional — Limpeza do frontend

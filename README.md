@@ -115,7 +115,7 @@ No Windows (PowerShell ou CMD), use `.\mvnw.cmd` no lugar de `./mvnw` (no PowerS
 
 <h3 id="banco">Banco de dados</h3>
 
-O backend usa PostgreSQL hospedado no [Neon](https://neon.tech). Não há banco em memória nem Docker: tanto o desenvolvimento quanto a produção falam com um Postgres de verdade.
+O backend usa PostgreSQL hospedado no [Neon](https://neon.tech). Não há banco em memória: tanto o desenvolvimento quanto a produção falam com um Postgres de verdade (o Docker só é usado para publicar a API no Render, veja [Deploy](#deploy-render)).
 
 O schema é criado só pelas migrations do Flyway em `backend/src/main/resources/db/migration/`, aplicadas automaticamente ao subir a aplicação. O Hibernate roda com `ddl-auto=validate`: ele só confere se as entidades batem com as tabelas e nunca altera o banco. Para mudar o schema, crie uma nova migration (`V<n>__descricao.sql`); nunca edite uma que já foi aplicada.
 
@@ -253,6 +253,7 @@ Projeto-Integrador-Computacional/
 │       ├── App.jsx
 │       └── index.css
 ├── backend/                        # API Java + Spring Boot
+│   ├── Dockerfile                  # imagem da API usada no Render
 │   ├── application-local.properties.example  # modelo da config local do banco
 │   └── src/
 │       ├── main/java/br/com/marketfaesa/
@@ -267,7 +268,8 @@ Projeto-Integrador-Computacional/
 │       └── test/java/br/com/marketfaesa/ # testes; PostgresDeTeste fornece o banco
 ├── CONTRIBUTING.md
 ├── PROXIMOS_PASSOS.md
-└── README.md
+├── README.md
+└── render.yaml                     # Blueprint do Render (API + front)
 ```
 
 <h2 id="estilos">🧩 Por que SCSS?</h2>
@@ -286,9 +288,41 @@ O símbolo representa um mural com quatro cards, um deles sendo fixado. Os arqui
 
 <h2 id="deploy">🌐 Deploy</h2>
 
-O frontend é publicado automaticamente no **GitHub Pages** pelo GitHub Actions a cada push na `main`. Os testes do backend rodam em outro workflow (veja [CI](#ci)).
+O projeto tem dois deploys independentes:
 
-O GitHub Pages serve apenas arquivos estáticos, então o backend precisará de outra hospedagem quando estiver pronto. Os detalhes estão no [PROXIMOS_PASSOS.md](PROXIMOS_PASSOS.md#4-deploy).
+- **GitHub Pages** (só o frontend): publicado automaticamente pelo GitHub Actions (`.github/workflows/deploy.yml`) a cada push na `main`, com o caminho `/Projeto-Integrador-Computacional/`. Continua funcionando como antes.
+- **Render** (frontend + API) com o banco no **Neon**: descrito no Blueprint `render.yaml`, na raiz. A API roda como Web Service Docker (`backend/Dockerfile`) e o front como Static Site.
+
+Os testes do backend rodam em outro workflow (veja [CI](#ci)).
+
+<h3 id="deploy-render">Render + Neon</h3>
+
+O `render.yaml` cria dois serviços no plano gratuito:
+
+| Serviço | Tipo | Endereço esperado |
+|---|---|---|
+| `marketfaesa-api` | Web Service, runtime Docker, região Virginia, health check em `/api/health` | `https://marketfaesa-api.onrender.com` |
+| `marketfaesa-web` | Static Site (build com `--base=/`) | `https://marketfaesa-web.onrender.com` |
+
+O front chama a API pela própria origem (`VITE_API_URL=https://marketfaesa-web.onrender.com`): o Static Site reescreve `/api/*` para `https://marketfaesa-api.onrender.com/api/*` e manda o resto para `/index.html`. Mesmo assim, o CORS da API libera a origem do front (`CORS_ALLOWED_ORIGINS`), porque a requisição repassada pode chegar com o header `Origin` do site (sem essa origem na lista, a API responde `403 Invalid CORS request`).
+
+Passo a passo:
+
+1. **Neon**: crie o projeto (de preferência na região `us-east-1`, perto da região Virginia do Render) e, em *Connect*, copie a string de conexão com e sem *Connection pooling*.
+2. **Converta para JDBC** (veja também [Banco de dados](#banco)): troque `postgresql://` por `jdbc:postgresql://`, tire `usuario:senha@` e remova `&channel_binding=require`, deixando só `?sslmode=require`.
+   - `DATABASE_URL`: host **com** `-pooler` (ex.: `jdbc:postgresql://ep-xxxx-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require`);
+   - `DATABASE_DIRECT_URL`: o mesmo host **sem** `-pooler`, usado pelo Flyway nas migrations;
+   - `DATABASE_USERNAME` e `DATABASE_PASSWORD`: o usuário e a senha que estavam na string.
+3. **Render**: em *New > Blueprint*, conecte o repositório e escolha a branch. O Render lê o `render.yaml` e pede os valores das variáveis marcadas com `sync: false` (as quatro `DATABASE_*`). O `JWT_SECRET` é gerado pelo próprio Render (valor aleatório de 256 bits).
+4. **Confira**: abra `https://marketfaesa-api.onrender.com/api/health` (deve responder `{"status":"ok"}`) e depois o site. Nos logs da API aparecem as migrations do Flyway aplicadas no Neon.
+
+Observações:
+
+- **Nome ocupado**: o Render usa o nome do serviço como subdomínio; se ele já existir, o endereço ganha um sufixo. Nesse caso, ajuste as três URLs no `render.yaml` (`CORS_ALLOWED_ORIGINS`, `VITE_API_URL` e o destino do rewrite `/api/*`) e sincronize o Blueprint.
+- **Variáveis `sync: false`** só são pedidas na criação do Blueprint; para trocá-las depois, use *Environment* no painel do serviço.
+- **Cold start**: no plano gratuito, a API dorme após uns 15 minutos sem requisições, e a primeira chamada seguinte pode levar perto de um minuto (o container sobe e o Spring inicia). O site estático não dorme. O `JAVA_TOOL_OPTIONS` do `render.yaml` limita a memória da JVM para caber nos 512 MB do plano.
+- **GitHub Pages com esta API**: para o site do Pages também usar a API do Render, defina a variável do repositório `VITE_API_URL=https://marketfaesa-api.onrender.com` e acrescente `https://arthurnunesdev.github.io` em `CORS_ALLOWED_ORIGINS`.
+- **Imagem local**: `docker build -t marketfaesa-api backend` e `docker run -p 8080:8080 -e DATABASE_URL=... -e DATABASE_USERNAME=... -e DATABASE_PASSWORD=... -e JWT_SECRET=... marketfaesa-api`. A porta vem de `PORT` (padrão `8080`).
 
 <h2 id="colaboradores">🤝 Colaboradores</h2>
 
